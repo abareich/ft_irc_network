@@ -1,0 +1,510 @@
+================================================================================
+  SIMULATION D'EXÉCUTION DÉTAILLÉE ET DOCUMENTATION DE LA COUCHE RÉSEAU (FT_IRC)
+================================================================================
+Auteur/Composant : Ayoub (Network Layer C++98 / Non-Blocking Multiplexed I/O)
+Langue : Français
+
+================================================================================
+1. VUE D'ENSEMBLE DU PROJET ET ARCHITECTURE
+================================================================================
+
+Le composant réseau développé ("ayoub_code") constitue le cœur de communication 
+événementiel non-bloquant du serveur IRC. Il utilise le multiplexage d'E/S avec 
+l'appel système `poll()`, permettant de gérer simultanément plusieurs clients 
+IRC dans un seul fil d'exécution (single-threaded event loop) sans jamais bloquer.
+
+Structure des modules :
+----------------------
+1. AyoubSocket : Encapsule la création, la configuration (socket IPv4 TCP, non-bloquant, 
+   réutilisation d'adresse), le bind, l'écoute (listen) et l'acceptation (accept) de clients.
+2. AyoubPollManager : Encapsule un vecteur dynamique de structures `struct pollfd`. 
+   Il gère l'ajout/suppression de descripteurs de fichiers (FD) et la modification 
+   des événements écoutés (POLLIN, POLLOUT).
+3. AyoubIo : Propose des fonctions statiques de bas niveau pour la lecture non-bloquante 
+   (`recvChunk`) et l'écriture non-bloquante (`sendFromBuffer`) avec gestion des erreurs 
+   système (EAGAIN / EWOULDBLOCK) et envois partiels.
+4. main_test.cpp : Point d'entrée principal orchestrant la boucle d'événements, 
+   la gestion des signaux POSIX (SIGINT, SIGTERM) et le cycle de vie des clients.
+
+================================================================================
+2. SIMULATION D'EXÉCUTION DÉTAILLÉE ÉTAPE PAR ÉTAPE (TIMELINE TRACE)
+================================================================================
+
+Voici le déroulement précis, étape par étape et instruction par instruction, de 
+l'exécution du serveur depuis son démarrage jusqu'à son arrêt propre.
+
+--------------------------------------------------------------------------------
+ÉNTAPE 2.1 : INITIALISATION DU SERVEUR ET GESTION DES SIGNAUX
+--------------------------------------------------------------------------------
+1. Lancement du binaire : `./ayoub_server_test 6667`
+2. Entrée dans `main(int argc, char **argv)` :
+   - `argc` vaut 2, `argv[1]` contient "6667".
+   - Conversion du port : `port = std::atoi("6667")` -> `port = 6667`.
+3. Interception des signaux POSIX :
+   - `std::signal(SIGINT, handleSignal);`
+   - `std::signal(SIGTERM, handleSignal);`
+   - Si l'utilisateur appuie sur Ctrl+C, la variable globale `g_running` passera à `false`.
+4. Instanciation des objets principaux :
+   - `AyoubSocket serverSocket;` -> Constructeur appelé : `_fd = -1`, `_port = 0`.
+   - `AyoubPollManager poller;` -> Constructeur appelé : `_fds` (std::vector<pollfd>) vide.
+   - `std::map<int, ClientContext> clients;` -> Map vide associant un FD à son contexte.
+
+--------------------------------------------------------------------------------
+ÉNTAPE 2.2 : CRÉATION ET CONFIGURATION DU SOCKET D'ÉCOUTE (LISTENING SOCKET)
+--------------------------------------------------------------------------------
+Appel de `serverSocket.createListeningSocket(6667, 10);`
+
+Séquence interne :
+a. `_createSocket()` :
+   - Appelle `socket(AF_INET, SOCK_STREAM, 0)`.
+   - Le noyau système alloue une socket TCP IPv4 et retourne le descripteur de fichier `FD 3`.
+   - `_fd` devient 3.
+b. `_configureReuseAddr()` :
+   - Appelle `setsockopt(3, SOL_SOCKET, SO_REUSEADDR, &optval=1, sizeof(optval))`.
+   - Permet de réutiliser le port 6667 immédiatement sans attendre la fin du délai TIME_WAIT du noyau.
+c. `setNonBlocking(3)` :
+   - Appelle `fcntl(3, F_SETFL, O_NONBLOCK)`.
+   - Marque le FD 3 comme non-bloquant. Toute opération future sur ce FD retournera immédiatement.
+d. `_bindSocket()` :
+   - Prépare la structure `sockaddr_in` : `sin_family = AF_INET`, `sin_addr = INADDR_ANY` (0.0.0.0), `sin_port = htons(6667)` (conversion en Network Byte Order / Big-Endian).
+   - Appelle `bind(3, &addr, sizeof(addr))`. Le socket FD 3 est maintenant associé au port 6667 local.
+e. `_startListening(10)` :
+   - Appelle `listen(3, 10)`. Transforme le socket d'un rôle actif à un rôle passif d'écoute. La file d'attente des connexions entrantes (backlog) est fixée à 10.
+f. Ajout au PollManager dans main :
+   - `poller.addFd(3, POLLIN);`
+   - Crée une structure `struct pollfd { fd: 3, events: POLLIN, revents: 0 }` et l'ajoute dans `poller._fds`.
+
+Le serveur affiche : `[SUCCESS] Listening socket créé avec succès (FD: 3)`
+
+--------------------------------------------------------------------------------
+ÉNTAPE 2.3 : DÉBUT DE LA BOUCLE D'ÉVÉNEMENTS (`while (g_running)`)
+--------------------------------------------------------------------------------
+Le serveur entre dans la boucle `while (g_running)` :
+
+Iter. 1 :
+- `poller.wait(1000)` est exécuté -> Appelle `poll(&_fds[0], 1, 1000)`.
+- Le thread se met en attente passive dans le noyau pendant au maximum 1000 ms (1 seconde).
+- Aucun client ne s'est encore connecté -> `poll()` retourne `0` (Timeout).
+- `readyCount <= 0` est vrai, l'itération fait `continue` et relance la boucle.
+
+--------------------------------------------------------------------------------
+ÉNTAPE 2.4 : ARRIVÉE D'UN NOUVEAU CLIENT (CONNEXION DU CLIENT 1)
+--------------------------------------------------------------------------------
+1. Un client externe (ex: `nc 127.0.0.1 6667`) initie une poignée de main TCP (Handshake SYN-SYN/ACK-ACK).
+2. Le noyau place la connexion établie dans la file d'attente du socket FD 3.
+3. À l'itération suivante de la boucle :
+   - `poller.wait(1000)` débloque immédiatement et retourne `1` (1 événement prêt).
+   - La structure `pollfd` pour FD 3 a son champ `revents = POLLIN`.
+4. Évaluation dans `main()` :
+   - `i = 0` -> `pfd.fd == 3`, soit `serverSocket.getFd()`.
+   - `revents & POLLIN` est VRAI.
+5. Traitement de la nouvelle connexion :
+   - `serverSocket.acceptClient(newClient)` est appelé.
+   - En interne, exécute `accept(3, &clientAddr, &clientLen)`.
+   - Le noyau crée un nouveau socket dédié à ce client et lui attribue le **FD 4**.
+   - Convertit l'adresse IP binaire du client en chaîne lisible via `inet_ntoa(clientAddr.sin_addr)` -> "127.0.0.1".
+   - Rend immédiatement le nouveau socket FD 4 NON-BLOQUANT : `setNonBlocking(4)` -> `fcntl(4, F_SETFL, O_NONBLOCK)`.
+   - Remplit `newClient.fd = 4` et `newClient.ip = "127.0.0.1"`, et retourne `true`.
+6. Enregistrement du client FD 4 dans les structures du serveur :
+   - `poller.addFd(4, POLLIN);` -> Le vecteur du poller contient maintenant [FD 3 (POLLIN), FD 4 (POLLIN)].
+   - Instanciation du contexte client :
+     `ctx.fd = 4; ctx.ip = "127.0.0.1";`
+     `clients[4] = ctx;`
+   - Console : `[+ CONNECT] Nouveau client connecté | FD: 4 | IP: 127.0.0.1`
+7. Envoi du message de bienvenue (IRC 001 Numeric Reply) :
+   - `std::string welcome = ":server 001 Client :Bienvenue sur le serveur de test IRC (FD: 4)\r\n";`
+   - Ajout au buffer de sortie du client : `clients[4].outBuffer += welcome;`
+   - Activation du suivi d'écriture dans `poller` : `poller.enableWrite(4);`
+   - Le masque d'événements du FD 4 dans le poller devient : `POLLIN | POLLOUT`.
+
+--------------------------------------------------------------------------------
+ÉNTAPE 2.5 : ENVOI DE DONNÉES AU CLIENT (ÉVÉNEMENT POLLOUT SUR FD 4)
+--------------------------------------------------------------------------------
+1. À l'itération suivante de la boucle principal :
+   - `poller.wait(1000)` inspecte FD 3 (POLLIN) et FD 4 (POLLIN | POLLOUT).
+   - Le socket FD 4 a de la place dans son buffer d'émission système TCP.
+   - `poll()` retourne immédiatement `1` avec `revents = POLLOUT` sur FD 4.
+2. Évaluation dans `main()` :
+   - `fd` = 4 (ce n'est pas le socket d'écoute FD 3, mais présent dans `clients`).
+   - `revents & POLLOUT` est VRAI.
+3. Exécution de l'écriture via `AyoubIo::sendFromBuffer(4, client.outBuffer, wouldBlock)` :
+   - `outputBuffer` contient le message de bienvenue (67 octets).
+   - Exécute l'appel système : `send(4, outputBuffer.c_str(), 67, 0)`.
+   - Le noyau transmet les 67 octets sur le réseau. `send()` retourne `67`.
+   - Effacement des données transmises dans le buffer : `outputBuffer.erase(0, 67)`.
+   - `outputBuffer` devient vide (`""`).
+   - Console : `[SEND] Transmis 67 octets au FD 4`.
+4. Désactivation du suivi d'écriture :
+   - Puisque `client.outBuffer.empty()` est VRAI, le serveur appelle `poller.disableWrite(4)`.
+   - Le masque d'événements du FD 4 repasse à `POLLIN` uniquement (évite de consommer la CPU inutilement en boucle POLLOUT).
+
+--------------------------------------------------------------------------------
+ÉNTAPE 2.6 : RÉCEPTION ET TRAITEMENT D'UN MESSAGE ENVOYÉ PAR LE CLIENT
+--------------------------------------------------------------------------------
+1. Le client tape dans sa console : `"NICK ayoub\r\n"` (12 octets) et l'envoie au serveur.
+2. À l'itération suivante de la boucle :
+   - `poller.wait(1000)` détecte les données entrantes sur FD 4.
+   - `poll()` retourne `1` avec `revents = POLLIN` sur FD 4.
+3. Évaluation dans `main()` :
+   - `fd` = 4, `revents & POLLIN` est VRAI.
+4. Exécution de la lecture via `AyoubIo::recvChunk(4, chunk, closed, wouldBlock)` :
+   - Allocation d'un tampon local `char buffer[4096]`.
+   - Exécution de l'appel système : `bytes = recv(4, buffer, 4096, 0)`.
+   - Le noyau remplit `buffer` avec `"NICK ayoub\r\n"` et retourne `12`.
+   - `chunk.assign(buffer, 12)` -> `chunk` contient `"NICK ayoub\r\n"`.
+   - `closed` reste `false`, `wouldBlock` reste `false`.
+5. Traitement applicatif :
+   - Console : `[RECV] FD 4 (127.0.0.1) : NICK ayoub\r\n`
+   - Le serveur de test formate une réponse en écho :
+     `client.outBuffer += "[ECHO] NICK ayoub\r\n";`
+   - Réactivation du suivi d'écriture : `poller.enableWrite(4);` (évènement POLLOUT réactivé).
+6. Au tour suivant du poll, l'écho est envoyé par `AyoubIo::sendFromBuffer` puis `POLLOUT` est désactivé.
+
+--------------------------------------------------------------------------------
+ÉNTAPE 2.7 : DÉCONEXION DU CLIENT (FERMETURE TCP / FIN / POLLHUP)
+--------------------------------------------------------------------------------
+1. Le client ferme son application ou tape Ctrl+C. Le système d'exploitation du client envoie un paquet TCP `FIN`.
+2. À l'itération suivante de la boucle :
+   - `poll()` signale l'événement `POLLIN | POLLHUP` sur FD 4.
+3. Évaluation dans `main()` :
+   - `revents & (POLLIN | POLLHUP | POLLERR)` est VRAI.
+4. Exécution de `AyoubIo::recvChunk(4, chunk, closed, wouldBlock)` :
+   - Exécute `recv(4, buffer, 4096, 0)`.
+   - Quand le socket distant est fermé proprement, `recv()` retourne `0`.
+   - Le code détecte `bytes == 0` -> met `closed = true`.
+5. Nettoyage de la connexion déconnectée :
+   - Console : `[- DISCONNECT] Client déconnecté | FD: 4`
+   - `poller.removeFd(4);` -> Supprime FD 4 du vecteur `_fds` de `AyoubPollManager`.
+   - `AyoubSocket::closeFd(4);` -> Exécute l'appel système `close(4)`. Le socket est libéré par le noyau.
+   - `clients.erase(4);` -> Le contexte du client 4 est supprimé de la map.
+   - L'instruction `continue;` passe immédiatement au FD suivant.
+
+--------------------------------------------------------------------------------
+ÉNTAPE 2.8 : FERMETURE ET NETTOYAGE DU SERVEUR (ARRÊT PAR SIGNAL SIGINT)
+--------------------------------------------------------------------------------
+1. L'administrateur appuie sur `Ctrl+C` dans le terminal du serveur.
+2. Le noyau envoie le signal `SIGINT` au processus.
+3. La fonction `handleSignal(int sig)` est immédiatement exécutée par le système :
+   - `g_running = false;`
+   - Console : `\n[SERVER] Signal de fermeture reçu. Arrêt du serveur...`
+4. La boucle `while (g_running)` s'arrête dès que l'itération courante se termine ou dès que `poll()` sort (ou est interrompu par le signal).
+5. Phase de Nettoyage Final (Cleanup) :
+   - Console : `[CLEANUP] Fermeture de tous les sockets...`
+   - Parcours de la map `clients` restante :
+     Pour chaque client encore connecté :
+     - `poller.removeFd(client_fd);`
+     - `AyoubSocket::closeFd(client_fd);` -> Appel système `close(fd)`.
+   - `clients.clear();`
+   - `serverSocket.closeSocket();` -> Exécute `close(3)` sur le socket d'écoute serveur et remet `_fd = -1`.
+   - Console : `[SERVER] Serveur arrêté proprement.`
+6. `main()` retourne `0`. Le processus se termine sans fuite de descripteurs de fichiers ni mémoire.
+
+
+================================================================================
+3. EXPLICATION DÉTAILLÉE DE TOUS LES APPELS SYSTÈME (SYSTEM CALLS POSIX)
+================================================================================
+
+Cette section décrit en détail chaque fonction système bas niveau (en C POSIX) 
+utilisée dans ce code réseau.
+
+--------------------------------------------------------------------------------
+3.1. socket()
+--------------------------------------------------------------------------------
+- Prototype C : `int socket(int domain, int type, int protocol);`
+- Emplacement dans le code : `AyoubSocket.cpp` -> `AyoubSocket::_createSocket()`
+- Utilisation : `_fd = socket(AF_INET, SOCK_STREAM, 0);`
+- Rôle : Crée un point de communication réseau et retourne un descripteur de fichier (File Descriptor / FD).
+- Paramètres :
+  1. `domain` = `AF_INET` : Utilise la famille d'adresses IPv4.
+  2. `type` = `SOCK_STREAM` : Socket orienté connexion, fiable, bidirectionnel (TCP).
+  3. `protocol` = `0` : Choisit automatiquement le protocole par défaut pour la famille (TCP pour SOCK_STREAM).
+- Valeurs de retour :
+  - En cas de succès : Retourne un entier positif représentant le File Descriptor (ex: 3).
+  - En cas d'échec : Retourne `-1` et définit la variable globale `errno` (ex: `EMFILE` si trop de FDs ouverts).
+
+--------------------------------------------------------------------------------
+3.2. setsockopt()
+--------------------------------------------------------------------------------
+- Prototype C : `int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);`
+- Emplacement dans le code : `AyoubSocket.cpp` -> `AyoubSocket::_configureReuseAddr()`
+- Utilisation : `setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));` (avec `optval = 1`)
+- Rôle : Configure les options associées au socket.
+- Paramètres :
+  1. `sockfd` : Le descripteur du socket (`_fd`).
+  2. `level` = `SOL_SOCKET` : L'option est configurée au niveau de la couche socket elle-même.
+  3. `optname` = `SO_REUSEADDR` : Permet la réutilisation immédiate d'une adresse/port local après le redémarrage du serveur, même si des connexions précédentes sont encore à l'état `TIME_WAIT` dans le noyau.
+  4. `optval` : Pointeur vers la valeur (1 pour activer l'option).
+  5. `optlen` : Taille en octets de la valeur (`sizeof(int)`).
+- Valeurs de retour : `0` en cas de succès, `-1` en cas d'erreur.
+
+--------------------------------------------------------------------------------
+3.3. fcntl()
+--------------------------------------------------------------------------------
+- Prototype C : `int fcntl(int fd, int cmd, ... /* arg */ );`
+- Emplacement dans le code : `AyoubSocket.cpp` -> `AyoubSocket::setNonBlocking(int fd)`
+- Utilisation : `fcntl(fd, F_SETFL, O_NONBLOCK);`
+- Rôle : Réalise des opérations de contrôle sur un descripteur de fichier ouvert.
+- Paramètres :
+  1. `fd` : Le descripteur du socket (ex: socket serveur ou socket client).
+  2. `cmd` = `F_SETFL` : Définit les drapeaux d'état du fichier (File Status Flags).
+  3. `arg` = `O_NONBLOCK` : Active le mode **Non-Bloquant**.
+- Conséquence Majeure :
+  Sous le mode non-bloquant, les appels système comme `accept()`, `recv()`, ou `send()` ne bloquent PLUS JAMAIS l'exécution du processus. Si l'opération ne peut pas s'effectuer immédiatement (ex: aucune donnée à lire), l'appel système retourne tout de suite `-1` en positionnant `errno` à `EAGAIN` ou `EWOULDBLOCK`.
+- Valeurs de retour : `0` en cas de succès, `-1` en cas d'erreur.
+
+--------------------------------------------------------------------------------
+3.4. bind()
+--------------------------------------------------------------------------------
+- Prototype C : `int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);`
+- Emplacement dans le code : `AyoubSocket.cpp` -> `AyoubSocket::_bindSocket()`
+- Utilisation : `bind(_fd, (struct sockaddr *)&addr, sizeof(addr));`
+- Rôle : Associe une adresse IP et un numéro de port local au socket référencé par `sockfd`.
+- Paramètres :
+  1. `sockfd` : Descripteur du socket.
+  2. `addr` : Pointeur vers la structure `sockaddr_in` convertie contenant :
+     - `sin_family = AF_INET` (IPv4)
+     - `sin_addr.s_addr = INADDR_ANY` (Écoute sur toutes les interfaces réseau de la machine : 0.0.0.0)
+     - `sin_port = htons(_port)` (Port converti au format réseau Big-Endian)
+  3. `addrlen` : Taille de la structure (`sizeof(struct sockaddr_in)`).
+- Valeurs de retour : `0` en cas de succès, `-1` en cas d'erreur (ex: `EADDRINUSE` si le port est déjà occupé).
+
+--------------------------------------------------------------------------------
+3.5. listen()
+--------------------------------------------------------------------------------
+- Prototype C : `int listen(int sockfd, int backlog);`
+- Emplacement dans le code : `AyoubSocket.cpp` -> `AyoubSocket::_startListening(int backlog)`
+- Utilisation : `listen(_fd, backlog);`
+- Rôle : Marque le socket `sockfd` comme un socket passif, c'est-à-dire un socket qui sera utilisé pour accepter les demandes de connexion entrantes avec `accept()`.
+- Paramètres :
+  1. `sockfd` : Descripteur du socket d'écoute.
+  2. `backlog` : Longueur maximale de la file d'attente des connexions non encore acceptées. Si la file d'attente est pleine, les nouveaux clients reçoivent une erreur de connexion.
+- Valeurs de retour : `0` en cas de succès, `-1` en cas d'erreur.
+
+--------------------------------------------------------------------------------
+3.6. accept()
+--------------------------------------------------------------------------------
+- Prototype C : `int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);`
+- Emplacement dans le code : `AyoubSocket.cpp` -> `AyoubSocket::acceptClient(AyoubAcceptedClient& out)`
+- Utilisation : `clientFd = accept(_fd, (struct sockaddr *)&clientAddr, &clientLen);`
+- Rôle : Extrait la première demande de connexion de la file d'attente des connexions en attente pour le socket d'écoute `sockfd`, crée un nouveau socket connecté et renvoie un nouveau descripteur de fichier faisant référence à ce socket.
+- Paramètres :
+  1. `sockfd` : Le socket serveur passif.
+  2. `addr` : Pointeur vers une structure `sockaddr_in` remplie par le noyau avec l'adresse IP et le port du client distant.
+  3. `addrlen` : Pointeur vers la taille de la structure d'adresse.
+- Valeurs de retour :
+  - En cas de succès : Un nouvel entier positif représentant le File Descriptor du client connecté (ex: FD 4).
+  - Si aucune connexion n'est présente et le socket est non-bloquant : Retourne `-1` et définit `errno` à `EAGAIN` ou `EWOULDBLOCK`.
+
+--------------------------------------------------------------------------------
+3.7. poll()
+--------------------------------------------------------------------------------
+- Prototype C : `int poll(struct pollfd *fds, nfds_t nfds, int timeout);`
+- Emplacement dans le code : `AyoubPollManager.cpp` -> `AyoubPollManager::wait(int timeoutMs)`
+- Utilisation : `ready = poll(&_fds[0], _fds.size(), timeoutMs);`
+- Rôle : Permet de surveiller simultanément plusieurs descripteurs de fichiers pour savoir si des E/S sont possibles (lecture prêt, écriture prête, ou erreur). C'est la brique fondamentale du multiplexage.
+- Paramètres :
+  1. `fds` : Tableau de structures `struct pollfd` contenant :
+     - `fd` : Le descripteur à surveiller.
+     - `events` : Masque binaire d'événements demandés (ex: `POLLIN`, `POLLOUT`).
+     - `revents` : Masque binaire d'événements réellement arrivés, rempli par le noyau.
+  2. `nfds` : Nombre d'éléments dans le tableau `fds`.
+  3. `timeout` : Délai d'attente en millisecondes (-1 = infini, 0 = retour immédiat, >0 = temps d'attente max).
+- Valeurs de retour :
+  - `> 0` : Le nombre de FDs pour lesquels `revents` est non nul.
+  - `0` : Le délai de timeout est expiré sans aucun événement.
+  - `-1` : Erreur (ex: `EINTR` si interrompu par un signal POSIX).
+
+--------------------------------------------------------------------------------
+3.8. recv()
+--------------------------------------------------------------------------------
+- Prototype C : `ssize_t recv(int sockfd, void *buf, size_t len, int flags);`
+- Emplacement dans le code : `AyoubIo.cpp` -> `AyoubIo::recvChunk(...)`
+- Utilisation : `bytes = recv(fd, buffer, sizeof(buffer), 0);`
+- Rôle : Lit des données entrantes depuis un socket TCP.
+- Paramètres :
+  1. `sockfd` : Descripteur du socket client.
+  2. `buf` : Pointeur vers le tampon mémoire de réception.
+  3. `len` : Nombre maximal d'octets à lire (ex: 4096).
+  4. `flags` = `0` : Aucun drapeau spécial.
+- Valeurs de retour :
+  - `> 0` : Le nombre d'octets réellement lus et copiés dans le tampon.
+  - `0` : Indique que le client distant a fermé la connexion proprement (TCP FIN).
+  - `-1` : Erreur. Si `errno == EAGAIN || errno == EWOULDBLOCK`, cela signifie qu'aucune donnée n'était disponible pour le moment (comportement non-bloquant normal).
+
+--------------------------------------------------------------------------------
+3.9. send()
+--------------------------------------------------------------------------------
+- Prototype C : `ssize_t send(int sockfd, const void *buf, size_t len, int flags);`
+- Emplacement dans le code : `AyoubIo.cpp` -> `AyoubIo::sendFromBuffer(...)`
+- Utilisation : `sent = send(fd, outputBuffer.c_str(), outputBuffer.size(), 0);`
+- Rôle : Transmet des données vers un socket TCP.
+- Paramètres :
+  1. `sockfd` : Descripteur du socket client.
+  2. `buf` : Pointeur vers les données à envoyer.
+  3. `len` : Nombre d'octets à envoyer.
+  4. `flags` = `0` : Aucun drapeau spécial.
+- Valeurs de retour :
+  - `> 0` : Nombre d'octets effectivement acceptés par le buffer système du noyau. Attention : ce nombre peut être inférieur à `len` (envoi partiel !).
+  - `0` : Aucun octet transmis.
+  - `-1` : Erreur. Si `errno == EAGAIN || errno == EWOULDBLOCK`, le buffer d'émission du noyau est temporairement plein.
+
+--------------------------------------------------------------------------------
+3.10. close()
+--------------------------------------------------------------------------------
+- Prototype C : `int close(int fd);`
+- Emplacement dans le code : `AyoubSocket.cpp` (`closeSocket`, `closeFd`)
+- Utilisation : `close(_fd);`
+- Rôle : Ferme un descripteur de fichier, libère les ressources noyau associées et ferme la connexion TCP sous-jacente.
+- Paramètres : `fd` (Le descripteur de fichier à fermer).
+- Valeurs de retour : `0` en cas de succès, `-1` en cas d'erreur.
+
+--------------------------------------------------------------------------------
+3.11. std::signal()
+--------------------------------------------------------------------------------
+- Prototype C : `void (*signal(int sig, void (*func)(int)))(int);`
+- Emplacement dans le code : `main_test.cpp`
+- Utilisation : `std::signal(SIGINT, handleSignal);`
+- Rôle : Associe une fonction de traitement (Signal Handler) à la réception d'un signal système POSIX (ex: `SIGINT` déclenché par Ctrl+C, `SIGTERM` pour arrêt propre).
+
+
+================================================================================
+4. EXPLICATION DÉTAILLÉE DES CLASSES, STRUCTURES ET FONCTIONS C++
+================================================================================
+
+--------------------------------------------------------------------------------
+4.1. CLASSE AyoubSocket (AyoubSocket.hpp / AyoubSocket.cpp)
+--------------------------------------------------------------------------------
+Rôle : Encapsule la création et la gestion bas-niveau d'un socket serveur d'écoute IPv4.
+
+Membres Privés (Attributs) :
+- `int _fd` : Le descripteur de fichier du socket d'écoute serveur (-1 si fermé).
+- `int _port` : Le port réseau configuré (ex: 6667).
+
+Constructeur et Destructeur :
+- `AyoubSocket()` : Initialise `_fd` à -1 et `_port` à 0.
+- `~AyoubSocket()` : Appelle `closeSocket()` pour garantir qu'aucune ressource système ne fuite lors de la destruction.
+
+Méthodes Publiques :
+- `void createListeningSocket(int port, int backlog)` :
+  Séquence d'initialisation complète du socket serveur. Appelle successivement :
+  `_createSocket()`, `_configureReuseAddr()`, `setNonBlocking(_fd)`, `_bindSocket()`, `_startListening(backlog)`.
+  En cas d'exception durant l'initialisation, le socket est automatiquement fermé proprement avant de rejeter l'exception.
+- `bool acceptClient(AyoubAcceptedClient& out)` :
+  Extrait un nouveau client de la file d'attente TCP via `accept()`.
+  Si aucune connexion n'est prête (EAGAIN/EWOULDBLOCK), renvoie `false`.
+  Si la connexion réussit, marque le socket du client comme non-bloquant avec `setNonBlocking(clientFd)`, extrait l'IP du client via `inet_ntoa()`, remplit la structure `out` et renvoie `true`.
+- `void closeSocket()` :
+  Ferme le socket `_fd` si `_fd != -1` via `close()` et réinitialise `_fd = -1`.
+- `int getFd() const` : Accesseur pour obtenir la valeur de `_fd`.
+- `int getPort() const` : Accesseur pour obtenir le port.
+- `bool isOpen() const` : Indique si le socket est valide (`_fd != -1`).
+
+Méthodes Statiques (Méthodes d'Utilité) :
+- `static void setNonBlocking(int fd)` :
+  Applique le drapeau `O_NONBLOCK` sur n'importe quel FD en utilisant `fcntl(fd, F_SETFL, O_NONBLOCK)`.
+  Lève une exception `std::runtime_error` en cas d'échec.
+- `static void closeFd(int fd)` :
+  Ferme de manière sécurisée n'importe quel descripteur de fichier `fd` si `fd != -1`.
+
+Méthodes Privées de Configuration :
+- `void _createSocket()` : Exécute `socket(AF_INET, SOCK_STREAM, 0)`.
+- `void _configureReuseAddr()` : Exécute `setsockopt(..., SO_REUSEADDR, ...)`.
+- `void _bindSocket()` : Remplit la structure `sockaddr_in` et exécute `bind()`.
+- `void _startListening(int backlog)` : Exécute `listen(_fd, backlog)`.
+
+--------------------------------------------------------------------------------
+4.2. CLASSE AyoubPollManager (AyoubPollManager.hpp / AyoubPollManager.cpp)
+--------------------------------------------------------------------------------
+Rôle : Gère une collection dynamique de descripteurs de fichiers pour l'appel système `poll()`.
+
+Membres Privés (Attributs) :
+- `PollList _fds` : Alias pour `std::vector<struct pollfd>`. Stocke les structures `pollfd` transmises au noyau lors de chaque appel à `poll()`.
+
+Méthodes Publiques :
+- `void addFd(int fd, short events)` :
+  Ajoute un nouveau FD à surveiller. Si le FD est déjà présent dans `_fds`, met simplement à jour ses évènements via `setEvents(fd, events)`. Sinon, pousse une nouvelle structure `pollfd{fd, events, 0}` dans le vecteur.
+- `void removeFd(int fd)` :
+  Recherche le FD dans le vecteur `_fds` et le supprime (méthode `erase()`).
+- `void setEvents(int fd, short events)` :
+  Recherche le FD et modifie directement son masque `events`.
+- `void enableWrite(int fd)` :
+  Ajoute le drapeau `POLLOUT` au masque d'événements existant du FD (`events |= POLLOUT`). Utilisé dès qu'il y a des données à envoyer dans le buffer de sortie du client.
+- `void disableWrite(int fd)` :
+  Retire le drapeau `POLLOUT` du masque d'événements du FD (`events &= ~POLLOUT`). Utilisé dès que le buffer de sortie devient vide pour éviter les boucles d'attente CPU inutiles.
+- `bool hasFd(int fd) const` :
+  Vérifie si un FD existe actuellement dans le tableau du poller.
+- `int wait(int timeoutMs)` :
+  Exécute l'appel système `poll(&_fds[0], _fds.size(), timeoutMs)`.
+  Si `poll()` renvoie `-1` à cause d'une interruption de signal POSIX (`errno == EINTR`), la méthode l'attrape et renvoie `0`. Sinon, lève une exception.
+- `void clearRevents()` :
+  Réinitialise à `0` les champs `revents` de tous les FDs surveillés.
+- `size_t size() const` : Renvoie le nombre de FDs surveillés (`_fds.size()`).
+- `const struct pollfd& at(size_t index) const` : Accès direct à la structure `pollfd` à un indice donné.
+- `short getRevents(int fd) const` : Renvoie le champ `revents` d'un FD spécifique.
+
+Méthode Privée :
+- `int _findIndex(int fd) const` :
+  Parcourt le vecteur `_fds` et retourne l'indice du FD ou `-1` s'il n'est pas trouvé.
+
+--------------------------------------------------------------------------------
+4.3. CLASSE AyoubIo (AyoubIo.hpp / AyoubIo.cpp)
+--------------------------------------------------------------------------------
+Rôle : Offre des fonctions utilitaires statiques pour effectuer des lectures et écritures non-bloquantes sécurisées sur les sockets.
+
+Méthodes Statiques Publiques :
+- `ssize_t recvChunk(int fd, std::string& chunk, bool& closed, bool& wouldBlock)` :
+  1. Vide la chaîne `chunk`, passe `closed` et `wouldBlock` à `false`.
+  2. Effectue l'appel système `bytes = recv(fd, buffer, 4096, 0)`.
+  3. Si `bytes > 0` : Copie les octets lus dans `chunk` et retourne `bytes`.
+  4. Si `bytes == 0` : Le client s'est déconnecté. Passe `closed = true` et retourne `0`.
+  5. Si `bytes < 0` : Vérifie l'erreur.
+     - Si `errno == EAGAIN || errno == EWOULDBLOCK` : Aucun octet disponible sans bloquer. Passe `wouldBlock = true` et retourne `0`.
+     - Autre erreur : Lève une `std::runtime_error`.
+
+- `ssize_t sendFromBuffer(int fd, std::string& outputBuffer, bool& wouldBlock)` :
+  1. Passe `wouldBlock` à `false`. Si `outputBuffer.empty()`, retourne `0`.
+  2. Effectue l'appel système `sent = send(fd, outputBuffer.c_str(), outputBuffer.size(), 0)`.
+  3. Si `sent > 0` : Supprime les `sent` premiers octets émis du tampon `outputBuffer.erase(0, sent)` (gestion des envois partiels) et retourne `sent`.
+  4. Si `sent == 0` : Retourne `0`.
+  5. Si `sent < 0` : Vérifie l'erreur.
+     - Si `errno == EAGAIN || errno == EWOULDBLOCK` : Le buffer réseau est plein. Passe `wouldBlock = true` et retourne `0`.
+     - Autre erreur : Lève une `std::runtime_error`.
+
+--------------------------------------------------------------------------------
+4.4. STRUCTURES DE DONNÉES AUXILIAIRES
+--------------------------------------------------------------------------------
+1. `struct AyoubAcceptedClient` (AyoubSocket.hpp)
+   - Contient :
+     - `int fd` : Descripteur de fichier attribué par `accept()`.
+     - `std::string ip` : Adresse IP du client au format texte (ex: "127.0.0.1").
+
+2. `struct ClientContext` (main_test.cpp)
+   - Représente l'état complet d'un client au niveau applicatif.
+   - Contient :
+     - `int fd` : Socket du client.
+     - `std::string ip` : IP du client.
+     - `std::string inBuffer` : Buffer d'accumulation des données reçues en attente de découpage par ligne (`\r\n`).
+     - `std::string outBuffer` : Buffer d'accumulation des messages à envoyer au client.
+
+
+================================================================================
+5. DRAPEAUX, CONSTANTES ET ÉTATS RÉSEAU (GUIDE ÉLECTRONIQUE)
+================================================================================
+
+- `AF_INET` : Address Family IPv4 (Protocoles Internet IPv4).
+- `SOCK_STREAM` : Socket orienté flux d'octets continu et connecté (TCP).
+- `SOL_SOCKET` : Niveau d'option définissant les options générales relatives au socket.
+- `SO_REUSEADDR` : Permet la réutilisation locale des adresses réseau (évite le redémarrage bloqué par `Address already in use`).
+- `INADDR_ANY` : Adresse IP spéciale (0.0.0.0) signifiant d'écouter sur toutes les cartes/interfaces réseau locales.
+- `htons(port)` : Host TO Network Short. Convertit le port d'un entier 16-bit du format processeur (Little-Endian sur x86/ARM) au format réseau standard (Big-Endian).
+- `inet_ntoa(in_addr)` : Network TO ASCII. Convertit une adresse IP binaire 32 bits en chaîne de caractères ASCII de type `"192.168.1.1"`.
+- `F_SETFL` / `O_NONBLOCK` : Commande `fcntl` pour activer les opérations d'entrée/sortie non-bloquantes.
+- `POLLIN` : Événement poll indiquant que des données sont prêtes à être lues sur le FD sans bloquer.
+- `POLLOUT` : Événement poll indiquant qu'il est possible d'écrire des données sur le FD sans bloquer.
+- `POLLHUP` : Événement poll indiquant que le correspondant distant a raccroché ou fermé la connexion.
+- `POLLERR` : Événement poll indiquant une condition d'erreur asynchrone sur le FD.
+- `EAGAIN` / `EWOULDBLOCK` : Code d'erreur réseau indiquant qu'une opération non-bloquante aurait dû bloquer car aucune donnée n'est disponible ou le tampon est plein. Ce n'est pas une erreur fatale.
+
+================================================================================
+FIN DU DOCUMENTATION DE SIMULATION D'EXÉCUTION DU CODE RÉSEAU
+================================================================================

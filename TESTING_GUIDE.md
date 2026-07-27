@@ -1,6 +1,6 @@
-# Guide de Test et Validation - Module Network Layer (`ayoub_code`)
+# Guide de Test et Validation - Module Network Layer
 
-Ce document explique pas à pas comment compiler, exécuter et tester le module réseau développé dans `ayoub_code/` (`AyoubSocket`, `AyoubPollManager`, `AyoubIo`). 
+Ce document explique pas à pas comment compiler, exécuter et tester le module réseau (`ServerSocket`, `PollManager`, `NetworkIo`). 
 
 Chaque étape de test détaille **comment procéder** et **pourquoi ce test est effectué**.
 
@@ -11,11 +11,10 @@ Chaque étape de test détaille **comment procéder** et **pourquoi ce test est 
 Pour compiler le binaire de test :
 
 ```bash
-cd ayoub_code
 make
 ```
 
-- **Ce qui est généré** : Un fichier exécutable nommé `ayoub_server_test`.
+- **Ce qui est généré** : Un fichier exécutable nommé `irc_server_test`.
 - **Pourquoi cette étape ?** : Vérifier que le code respecte la norme C++98 (`-std=c++98`) et compile sans avertissements ni erreurs (`-Wall -Wextra -Werror`).
 
 ---
@@ -26,7 +25,7 @@ make
 
 **Commande à exécuter :**
 ```bash
-./ayoub_server_test 6667
+./irc_server_test 6667
 ```
 
 **Pourquoi fait-on ce test ?**
@@ -50,7 +49,7 @@ nc 127.0.0.1 6667
 **Pourquoi fait-on ce test ?**
 1. **Validation d'`acceptClient()`** : Vérifie que `accept()` récupère le nouveau client sans bloquer le serveur.
 2. **Validation du socket client non-bloquant** : S'assure que le socket du client est immédiatement passé en `O_NONBLOCK` via `setNonBlocking()`.
-3. **Validation de l'enregistrement `poll()`** : Vérifie que le nouveau descripteur de fichier (FD) est ajouté avec succès dans `AyoubPollManager`.
+3. **Validation de l'enregistrement `poll()`** : Vérifie que le nouveau descripteur de fichier (FD) est ajouté avec succès dans `PollManager`.
 
 ---
 
@@ -64,7 +63,7 @@ nc 127.0.0.1 6667
 
 **Pourquoi fait-on ce test ?**
 1. **Validation du multiplexage E/S avec `poll()`** : Garantit que le serveur gère plusieurs connexions simultanées sans bloquer sur un client lent ou inactif.
-2. **Gestion dynamique du vecteur `pollfd`** : S'assure que `AyoubPollManager` redimensionne et gère la liste des FDs (`std::vector<struct pollfd>`) en toute sécurité.
+2. **Gestion dynamique du vecteur `pollfd`** : S'assure que `PollManager` redimensionne et gère la liste des FDs (`std::vector<struct pollfd>`) en toute sécurité.
 
 ---
 
@@ -78,8 +77,8 @@ Dans le terminal où `nc 127.0.0.1 6667` est ouvert, tapez un message (ex: `PING
 - Le client reçoit en réponse : `[ECHO] PING :123456`.
 
 **Pourquoi fait-on ce test ?**
-1. **Validation d'`AyoubIo::recvChunk()`** : Teste la lecture par morceaux de 4096 octets et vérifie qu'aucune erreur `EAGAIN` / `EWOULDBLOCK` ne fait crasher le serveur.
-2. **Validation d'`AyoubIo::sendFromBuffer()`** : Vérifie l'envoi non-bloquant du buffer de sortie.
+1. **Validation de `NetworkIo::recvChunk()`** : Teste la lecture par morceaux de 4096 octets et vérifie qu'aucune erreur `EAGAIN` / `EWOULDBLOCK` ne fait crasher le serveur.
+2. **Validation de `NetworkIo::sendFromBuffer()`** : Vérifie l'envoi non-bloquant du buffer de sortie.
 3. **Validation de l'activation/désactivation dynamique de `POLLOUT`** :
    - `enableWrite(fd)` est appelé **uniquement** quand le buffer de sortie contient des données.
    - `disableWrite(fd)` est appelé dès que le buffer devient vide pour éviter de consommer du CPU inutilement avec `POLLOUT`.
@@ -92,7 +91,7 @@ Dans le terminal où `nc 127.0.0.1 6667` est ouvert, tapez un message (ex: `PING
 Fermer l'un des terminaux clients avec `Ctrl+C` ou tapez `Ctrl+D`.
 
 **Résultat attendu :**
-- Le serveur détection la fermeture et affiche : `[- DISCONNECT] Client déconnecté | FD: 4`.
+- Le serveur détecte la fermeture et affiche : `[- DISCONNECT] Client déconnecté | FD: 4`.
 
 **Pourquoi fait-on ce test ?**
 1. **Validation de la détection EOF (`bytes == 0`)** : S'assure que `recvChunk()` retourne `closed = true` quand le client ferme le socket.
@@ -115,11 +114,11 @@ Dans le terminal du serveur, appuyer sur `Ctrl+C`.
 
 ## Synthèse des Tests
 
-| Test # | Description | Composant Testé | Raison / Obectif principal |
+| Test # | Description | Composant Testé | Raison / Objectif principal |
 | :---: | :--- | :--- | :--- |
-| **01** | Initialisation & Listen | `AyoubSocket` | Valider `socket`, `bind`, `listen`, `SO_REUSEADDR` & non-blocage |
-| **02** | Connexion Client | `AyoubSocket` + `AyoubPollManager` | Valider `acceptClient()` non-bloquant et l'ajout au `poll` |
-| **03** | Multi-clients | `AyoubPollManager` | Valider le multiplexage sans blocage de l'Event Loop |
-| **04** | Communication (E/S) | `AyoubIo` + `POLLOUT` | Valider `recvChunk`, `sendFromBuffer` et le toggle dynamique de `POLLOUT` |
-| **05** | Déconnexion Client | `AyoubPollManager` + `AyoubSocket` | Valider le nettoyage des FDs et éviter les fuites de ressources |
-| **06** | Fermeture Serveur | Global (`AyoubSocket`) | Valider le shutdown propre sur signal `SIGINT` |
+| **01** | Initialisation & Listen | `ServerSocket` | Valider `socket`, `bind`, `listen`, `SO_REUSEADDR` & non-blocage |
+| **02** | Connexion Client | `ServerSocket` + `PollManager` | Valider `acceptClient()` non-bloquant et l'ajout au `poll` |
+| **03** | Multi-clients | `PollManager` | Valider le multiplexage sans blocage de l'Event Loop |
+| **04** | Communication (E/S) | `NetworkIo` + `POLLOUT` | Valider `recvChunk`, `sendFromBuffer` et le toggle dynamique de `POLLOUT` |
+| **05** | Déconnexion Client | `PollManager` + `ServerSocket` | Valider le nettoyage des FDs et éviter les fuites de ressources |
+| **06** | Fermeture Serveur | Global (`ServerSocket`) | Valider le shutdown propre sur signal `SIGINT` |

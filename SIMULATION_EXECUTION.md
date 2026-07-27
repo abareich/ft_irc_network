@@ -1,14 +1,13 @@
 # 🚀 SIMULATION D'EXÉCUTION ET DOCUMENTATION DÉTAILLÉE DU MODULE RÉSEAU (`FT_IRC`)
 
 > **Composant :** Couche Réseau Non-Bloquante (C++98 / I/O Multiplexing via `poll`)  
-> **Auteur :** Ayoub Bareich (`ayoub_code`)   
 > **Langue :** Français  
 
 ---
 
 ## 📌 1. Vue d'Ensemble & Architecture Globale
 
-Le module réseau (`ayoub_code`) constitue la couche fondamentale de communication du serveur IRC **`ft_irc`**. Il met en œuvre un modèle de **Multiplexage d'Entrées/Sorties (I/O Multiplexing)** basé sur l'appel système POSIX `poll()`. 
+Le module réseau constitue la couche fondamentale de communication du serveur IRC **`ft_irc`**. Il met en œuvre un modèle de **Multiplexage d'Entrées/Sorties (I/O Multiplexing)** basé sur l'appel système POSIX `poll()`. 
 
 Grâce à ce modèle **non-bloquant** et **monothread (single-threaded event loop)**, le serveur peut gérer des dizaines de connexions clientes simultanées sans bloquer le fil d'exécution et sans consommer inutilement du temps processeur.
 
@@ -17,10 +16,10 @@ Grâce à ce modèle **non-bloquant** et **monothread (single-threaded event loo
 ```mermaid
 graph TD
     Main["main_test.cpp<br/>(Event Loop & Signal Handling)"]
-    Socket["AyoubSocket<br/>(Creation, Non-blocking, Bind, Listen, Accept)"]
-    Poll["AyoubPollManager<br/>(Vector of struct pollfd, Events Management)"]
-    Io["AyoubIo<br/>(Non-blocking recv & send, Partial-send handling)"]
-    ClientCtx["ClientContext / AyoubAcceptedClient<br/>(FD, IP, Buffers)"]
+    Socket["ServerSocket<br/>(Creation, Non-blocking, Bind, Listen, Accept)"]
+    Poll["PollManager<br/>(Vector of struct pollfd, Events Management)"]
+    Io["NetworkIo<br/>(Non-blocking recv & send, Partial-send handling)"]
+    ClientCtx["ClientContext / AcceptedClient<br/>(FD, IP, Buffers)"]
 
     Main --> Socket
     Main --> Poll
@@ -33,9 +32,9 @@ graph TD
 
 | Module C++ | Fichiers | Responsabilités Principales |
 | :--- | :--- | :--- |
-| **`AyoubSocket`** | `AyoubSocket.hpp`<br/>`AyoubSocket.cpp` | Encapsule la création de sockets IPv4 TCP, la configuration `SO_REUSEADDR`, le mode non-bloquant `O_NONBLOCK`, l'association de port (`bind`), l'écoute (`listen`) et l'acceptation des clients (`accept`). |
-| **`AyoubPollManager`** | `AyoubPollManager.hpp`<br/>`AyoubPollManager.cpp` | Encapsule la collection dynamique `std::vector<struct pollfd>`. Gère l'ajout/retrait de descripteurs de fichiers (FDs), le réglage des masques d'événements (`POLLIN`, `POLLOUT`), et l'appel à `poll()`. |
-| **`AyoubIo`** | `AyoubIo.hpp`<br/>`AyoubIo.cpp` | Classe statique utilitaire gérant la lecture non-bloquante (`recvChunk`) et l'écriture non-bloquante (`sendFromBuffer`) avec support des envois partiels et détection des interruptions `EAGAIN` / `EWOULDBLOCK`. |
+| **`ServerSocket`** | `ServerSocket.hpp`<br/>`ServerSocket.cpp` | Encapsule la création de sockets IPv4 TCP, la configuration `SO_REUSEADDR`, le mode non-bloquant `O_NONBLOCK`, l'association de port (`bind`), l'écoute (`listen`) et l'acceptation des clients (`accept`). |
+| **`PollManager`** | `PollManager.hpp`<br/>`PollManager.cpp` | Encapsule la collection dynamique `std::vector<struct pollfd>`. Gère l'ajout/retrait de descripteurs de fichiers (FDs), le réglage des masques d'événements (`POLLIN`, `POLLOUT`), et l'appel à `poll()`. |
+| **`NetworkIo`** | `NetworkIo.hpp`<br/>`NetworkIo.cpp` | Classe statique utilitaire gérant la lecture non-bloquante (`recvChunk`) et l'écriture non-bloquante (`sendFromBuffer`) avec support des envois partiels et détection des interruptions `EAGAIN` / `EWOULDBLOCK`. |
 | **`main_test`** | `main_test.cpp` | Orchestrateur principal : instancie les modules, capture les signaux de fermeture (`SIGINT`, `SIGTERM`), et exécute la boucle d'événements principale. |
 
 ---
@@ -49,9 +48,9 @@ sequenceDiagram
     autonumber
     actor Client as Client IRC (nc / irssi)
     participant Server as Serveur main (Event Loop)
-    participant Socket as AyoubSocket (FD 3)
-    participant Poller as AyoubPollManager
-    participant Io as AyoubIo
+    participant Socket as ServerSocket (FD 3)
+    participant Poller as PollManager
+    participant Io as NetworkIo
 
     Note over Server,Socket: 1. Initialisation & Listening Socket
     Server->>Socket: createListeningSocket(6667, 10)
@@ -73,10 +72,10 @@ sequenceDiagram
     Server->>Poller: disableWrite(FD 4) -> (POLLIN)
 
     Note over Server,Client: 4. Réception d'un Message Client
-    Client->>Io: Envoi "NICK ayoub\r\n"
+    Client->>Io: Envoi "NICK client\r\n"
     Poller-->>Server: poll() débloque -> POLLIN sur FD 4
     Server->>Io: recvChunk(FD 4, chunk)
-    Io-->>Server: Retourne 12 octets reçus
+    Io-->>Server: Retourne 13 octets reçus
     Server->>Poller: enableWrite(FD 4)
 
     Note over Server,Client: 5. Déconnexion du Client
@@ -92,7 +91,7 @@ sequenceDiagram
 ### 🔍 Détail du Deroulement d'Exécution
 
 #### Étape 2.1 : Démarrage du Serveur & Enregistrement des Signaux
-1. Lancement de la commande : `./ayoub_server_test 6667`
+1. Lancement de la commande : `./irc_server_test 6667`
 2. Exécution du `main()` :
    - Analyse de `argv[1]` $\rightarrow$ `port = 6667`.
    - Attachement des gestionnaires de signaux POSIX :
@@ -141,7 +140,7 @@ Le serveur entre dans la boucle principale.
 
 #### Étape 2.5 : Traitement de l'Événement `POLLOUT` (Envoi des Données)
 1. À l'itération suivante de `poll()`, le `FD 4` est prêt en écriture $\rightarrow$ `revents & POLLOUT` est VRAI.
-2. Appel à `AyoubIo::sendFromBuffer(4, client.outBuffer, wouldBlock)` :
+2. Appel à `NetworkIo::sendFromBuffer(4, client.outBuffer, wouldBlock)` :
    - Appel système `send(4, outBuffer.c_str(), outBuffer.size(), 0)`.
    - Supposons que les 67 octets soient émis d'un coup $\rightarrow$ `send()` retourne `67`.
    - `outBuffer.erase(0, 67)` $\rightarrow$ le tampon devient vide.
@@ -153,12 +152,12 @@ Le serveur entre dans la boucle principale.
 > Si `send()` n'envoie que 30 octets sur les 67 (par exemple si le tampon système réseau est presque plein), `sendFromBuffer()` n'efface que 30 octets. Le reste (37 octets) demeure dans `outBuffer` et `POLLOUT` reste activé pour envoyer le reliquat au prochain tour de poll.
 
 #### Étape 2.6 : Traitement de l'Événement `POLLIN` (Réception de Données)
-1. Le client envoie `"NICK ayoub\r\n"`.
+1. Le client envoie `"NICK client\r\n"`.
 2. `poll()` signale `POLLIN` sur le `FD 4`.
-3. Appel à `AyoubIo::recvChunk(4, chunk, closed, wouldBlock)` :
+3. Appel à `NetworkIo::recvChunk(4, chunk, closed, wouldBlock)` :
    - Appel système `recv(4, buffer, 4096, 0)`.
-   - Le noyau remplit le tampon local avec 12 octets et retourne `12`.
-   - `chunk` contient `"NICK ayoub\r\n"`.
+   - Le noyau remplit le tampon local avec 13 octets et retourne `13`.
+   - `chunk` contient `"NICK client\r\n"`.
 4. Traitement applicatif :
    - Le serveur enregistre la donnée reçue et prépare un message d'écho dans `outBuffer`.
    - `poller.enableWrite(4)` réactive `POLLOUT`.
@@ -167,17 +166,17 @@ Le serveur entre dans la boucle principale.
 1. Le client ferme son terminal ou quitte l'application.
 2. Le système d'exploitation distant émet un paquet TCP `FIN`.
 3. `poll()` détecte l'événement et alimente `revents` avec `POLLIN | POLLHUP`.
-4. Appel à `AyoubIo::recvChunk(4, chunk, closed, wouldBlock)` :
+4. Appel à `NetworkIo::recvChunk(4, chunk, closed, wouldBlock)` :
    - `recv()` retourne `0`.
    - Le code positionne `closed = true`.
 5. Procédure de nettoyage :
    - `poller.removeFd(4)` $\rightarrow$ retrait de la surveillance `poll`.
-   - `AyoubSocket::closeFd(4)` $\rightarrow$ appel système `close(4)` pour restituer le FD au noyau.
+   - `ServerSocket::closeFd(4)` $\rightarrow$ appel système `close(4)` pour restituer le FD au noyau.
    - `clients.erase(4)` $\rightarrow$ suppression de l'entrée dans la map.
 
 #### Étape 2.8 : Interruption par Signal (`Ctrl+C`) & Nettoyage Final
 1. L'utilisateur appuie sur `Ctrl+C` $\rightarrow$ Réception du signal `SIGINT`.
-2. `handleSignal(int sig)` passes la variable `g_running = false`.
+2. `handleSignal(int sig)` passe la variable `g_running = false`.
 3. La boucle `while (g_running)` s'arrête.
 4. Nettoyage final :
    - Fermeture et retrait de tous les sockets clients encore actifs dans `clients`.
@@ -196,16 +195,16 @@ Voici l'analyse exhaustive de chaque appel système C POSIX implémenté dans le
 +---------------+----------------------------------+--------------------------------+
 | Appel Système | Rôle Principal                   | Fichier d'Appel                |
 +---------------+----------------------------------+--------------------------------+
-| socket()      | Allocation de la socket IPv4 TCP | AyoubSocket.cpp                |
-| setsockopt()  | Configuration SO_REUSEADDR       | AyoubSocket.cpp                |
-| fcntl()       | Activation du mode O_NONBLOCK    | AyoubSocket.cpp                |
-| bind()        | Liaison Adresse IP & Port        | AyoubSocket.cpp                |
-| listen()      | Passage en socket passif écoute  | AyoubSocket.cpp                |
-| accept()      | Extraction des connexions clients| AyoubSocket.cpp                |
-| poll()        | Multiplexage synchrone d'E/S     | AyoubPollManager.cpp           |
-| recv()        | Lecture des octets TCP           | AyoubIo.cpp                    |
-| send()        | Émission des octets TCP          | AyoubIo.cpp                    |
-| close()       | Fermeture de descripteur (FD)    | AyoubSocket.cpp                |
+| socket()      | Allocation de la socket IPv4 TCP | ServerSocket.cpp               |
+| setsockopt()  | Configuration SO_REUSEADDR       | ServerSocket.cpp               |
+| fcntl()       | Activation du mode O_NONBLOCK    | ServerSocket.cpp               |
+| bind()        | Liaison Adresse IP & Port        | ServerSocket.cpp               |
+| listen()      | Passage en socket passif écoute  | ServerSocket.cpp               |
+| accept()      | Extraction des connexions clients| ServerSocket.cpp               |
+| poll()        | Multiplexage synchrone d'E/S     | PollManager.cpp                |
+| recv()        | Lecture des octets TCP           | NetworkIo.cpp                  |
+| send()        | Émission des octets TCP          | NetworkIo.cpp                  |
+| close()       | Fermeture de descripteur (FD)    | ServerSocket.cpp               |
 | signal()      | Interception SIGINT / SIGTERM    | main_test.cpp                  |
 +---------------+----------------------------------+--------------------------------+
 ```
@@ -216,7 +215,7 @@ Voici l'analyse exhaustive de chaque appel système C POSIX implémenté dans le
 ```c
 int socket(int domain, int type, int protocol);
 ```
-- **Fichier :** `AyoubSocket.cpp` $\rightarrow$ `_createSocket()`
+- **Fichier :** `ServerSocket.cpp` $\rightarrow$ `_createSocket()`
 - **Appel :** `_fd = socket(AF_INET, SOCK_STREAM, 0);`
 - **Rôle :** Alloue un point de communication réseau et retourne un descripteur de fichier (FD).
 - **Paramètres :**
@@ -231,7 +230,7 @@ int socket(int domain, int type, int protocol);
 ```c
 int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
 ```
-- **Fichier :** `AyoubSocket.cpp` $\rightarrow$ `_configureReuseAddr()`
+- **Fichier :** `ServerSocket.cpp` $\rightarrow$ `_configureReuseAddr()`
 - **Appel :** `setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));`
 - **Rôle :** Configure les options associées au socket.
 - **Paramètres :**
@@ -247,7 +246,7 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
 ```c
 int fcntl(int fd, int cmd, ... /* arg */ );
 ```
-- **Fichier :** `AyoubSocket.cpp` $\rightarrow$ `setNonBlocking(int fd)`
+- **Fichier :** `ServerSocket.cpp` $\rightarrow$ `setNonBlocking(int fd)`
 - **Appel :** `fcntl(fd, F_SETFL, O_NONBLOCK);`
 - **Rôle :** Modifie les drapeaux d'état d'un descripteur de fichier (File Status Flags).
 - **Paramètres :**
@@ -262,7 +261,7 @@ int fcntl(int fd, int cmd, ... /* arg */ );
 ```c
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 ```
-- **Fichier :** `AyoubSocket.cpp` $\rightarrow$ `_bindSocket()`
+- **Fichier :** `ServerSocket.cpp` $\rightarrow$ `_bindSocket()`
 - **Appel :** `bind(_fd, (struct sockaddr *)&addr, sizeof(addr));`
 - **Rôle :** Assigne l'adresse IP locale et le port d'écoute au socket.
 - **Structure transmise (`sockaddr_in`) :**
@@ -276,7 +275,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 ```c
 int listen(int sockfd, int backlog);
 ```
-- **Fichier :** `AyoubSocket.cpp` $\rightarrow$ `_startListening()`
+- **Fichier :** `ServerSocket.cpp` $\rightarrow$ `_startListening()`
 - **Appel :** `listen(_fd, backlog);`
 - **Rôle :** Marque le socket comme socket passif d'écoute destiné à recevoir les connexions clientes.
 - **Paramètres :**
@@ -288,7 +287,7 @@ int listen(int sockfd, int backlog);
 ```c
 int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 ```
-- **Fichier :** `AyoubSocket.cpp` $\rightarrow$ `acceptClient()`
+- **Fichier :** `ServerSocket.cpp` $\rightarrow$ `acceptClient()`
 - **Appel :** `clientFd = accept(_fd, (struct sockaddr *)&clientAddr, &clientLen);`
 - **Rôle :** Dépile la première demande de connexion de la file d'attente et crée un **nouveau socket client**.
 - **Retour :**
@@ -301,7 +300,7 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 ```c
 int poll(struct pollfd *fds, nfds_t nfds, int timeout);
 ```
-- **Fichier :** `AyoubPollManager.cpp` $\rightarrow$ `wait()`
+- **Fichier :** `PollManager.cpp` $\rightarrow$ `wait()`
 - **Appel :** `ready = poll(&_fds[0], _fds.size(), timeoutMs);`
 - **Rôle :** Surveille simultanément un ensemble de descripteurs de fichiers jusqu'à ce qu'un événement survienne ou que le délai expire.
 - **Structure `pollfd` :**
@@ -323,7 +322,7 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout);
 ```c
 ssize_t recv(int sockfd, void *buf, size_t len, int flags);
 ```
-- **Fichier :** `AyoubIo.cpp` $\rightarrow$ `recvChunk()`
+- **Fichier :** `NetworkIo.cpp` $\rightarrow$ `recvChunk()`
 - **Appel :** `bytes = recv(fd, buffer, 4096, 0);`
 - **Rôle :** Lit des octets depuis un socket TCP dans un tampon mémoire.
 - **Retour :**
@@ -337,7 +336,7 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags);
 ```c
 ssize_t send(int sockfd, const void *buf, size_t len, int flags);
 ```
-- **Fichier :** `AyoubIo.cpp` $\rightarrow$ `sendFromBuffer()`
+- **Fichier :** `NetworkIo.cpp` $\rightarrow$ `sendFromBuffer()`
 - **Appel :** `sent = send(fd, outputBuffer.c_str(), outputBuffer.size(), 0);`
 - **Rôle :** Transmet des octets vers un socket TCP.
 - **Retour :**
@@ -350,7 +349,7 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags);
 ```c
 int close(int fd);
 ```
-- **Fichier :** `AyoubSocket.cpp` $\rightarrow$ `closeSocket()`, `closeFd()`
+- **Fichier :** `ServerSocket.cpp` $\rightarrow$ `closeSocket()`, `closeFd()`
 - **Appel :** `close(fd);`
 - **Rôle :** Libère le descripteur de fichier et ferme la connexion TCP associée.
 
@@ -358,16 +357,16 @@ int close(int fd);
 
 ## 💻 4. Structure et Spécifications des Classes C++
 
-### 📦 4.1. Classe `AyoubSocket`
+### 📦 4.1. Classe `ServerSocket`
 
 ```cpp
-class AyoubSocket {
+class ServerSocket {
     public:
-        AyoubSocket();
-        ~AyoubSocket();
+        ServerSocket();
+        ~ServerSocket();
 
         void    createListeningSocket(int port, int backlog);
-        bool    acceptClient(AyoubAcceptedClient& out);
+        bool    acceptClient(AcceptedClient& out);
         void    closeSocket();
 
         int     getFd() const;
@@ -383,14 +382,14 @@ class AyoubSocket {
 ```
 
 > [!NOTE]
-> La classe applique le principe **RAII (Resource Acquisition Is Initialization)** : son destructeur `~AyoubSocket()` s'assure que le socket serveur est automatiquement fermé lors de sa destruction.
+> La classe applique le principe **RAII (Resource Acquisition Is Initialization)** : son destructeur `~ServerSocket()` s'assure que le socket serveur est automatiquement fermé lors de sa destruction.
 
 ---
 
-### 📦 4.2. Classe `AyoubPollManager`
+### 📦 4.2. Classe `PollManager`
 
 ```cpp
-class AyoubPollManager {
+class PollManager {
     public:
         typedef std::vector<struct pollfd> PollList;
 
@@ -409,10 +408,10 @@ class AyoubPollManager {
 
 ---
 
-### 📦 4.3. Classe `AyoubIo`
+### 📦 4.3. Classe `NetworkIo`
 
 ```cpp
-class AyoubIo {
+class NetworkIo {
     public:
         static ssize_t recvChunk(int fd, std::string& chunk, 
                                  bool& closed, bool& wouldBlock);
@@ -431,7 +430,7 @@ class AyoubIo {
 | `SOCK_STREAM` | Socket orienté flux d'octets (TCP) | Garantit la livraison fiable et ordonnée des paquets. |
 | `SO_REUSEADDR` | Option Socket Réutilisation d'adresse | Permet de relancer le serveur immédiatement sans attendre `TIME_WAIT`. |
 | `INADDR_ANY` | `0.0.0.0` | Écoute sur toutes les interfaces réseau physiques et virtuelles de la machine. |
-| `O_NONBLOCK` | Open Flag Non-Bloquant | Empeche les appels I/O de bloquer le fil d'exécution principal. |
+| `O_NONBLOCK` | Open Flag Non-Bloquant | Empêche les appels I/O de bloquer le fil d'exécution principal. |
 | `POLLIN` | Event Wait Read | Indique qu'il y a des données à lire dans le socket. |
 | `POLLOUT` | Event Wait Write | Indique que le socket est prêt à recevoir des données à émettre. |
 | `POLLHUP` | Event Hang Up | Signalé lorsque le correspondant distant ferme la connexion TCP. |

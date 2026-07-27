@@ -1,6 +1,6 @@
-#include "AyoubSocket.hpp"
-#include "AyoubPollManager.hpp"
-#include "AyoubIo.hpp"
+#include "ServerSocket.hpp"
+#include "PollManager.hpp"
+#include "NetworkIo.hpp"
 #include <iostream>
 #include <map>
 #include <cstdlib>
@@ -34,12 +34,12 @@ int main(int argc, char **argv)
 	std::signal(SIGTERM, handleSignal);
 
 	std::cout << "==========================================" << std::endl;
-	std::cout << "   TEST SERVEUR NETWORK LAYER (AYOUB)    " << std::endl;
+	std::cout << "     TEST SERVEUR NETWORK LAYER (IRC)     " << std::endl;
 	std::cout << "==========================================" << std::endl;
 	std::cout << "[INFO] Port d'écoute : " << port << std::endl;
 
-	AyoubSocket serverSocket;
-	AyoubPollManager poller;
+	ServerSocket serverSocket;
+	PollManager poller;
 	std::map<int, ClientContext> clients;
 
 	try
@@ -80,7 +80,7 @@ int main(int argc, char **argv)
 				{
 					if (revents & POLLIN)
 					{
-						AyoubAcceptedClient newClient;
+						AcceptedClient newClient;
 						if (serverSocket.acceptClient(newClient))
 						{
 							poller.addFd(newClient.fd, POLLIN);
@@ -113,7 +113,7 @@ int main(int argc, char **argv)
 						bool closed = false;
 						bool wouldBlock = false;
 
-						ssize_t bytesRead = AyoubIo::recvChunk(fd, chunk, closed, wouldBlock);
+						ssize_t bytesRead = NetworkIo::recvChunk(fd, chunk, closed, wouldBlock);
 						if (bytesRead > 0)
 						{
 							std::cout << "[RECV] FD " << fd << " (" << client.ip << ") : " << chunk;
@@ -126,7 +126,7 @@ int main(int argc, char **argv)
 						{
 							std::cout << "[- DISCONNECT] Client déconnecté | FD: " << fd << std::endl;
 							poller.removeFd(fd);
-							AyoubSocket::closeFd(fd);
+							ServerSocket::closeFd(fd);
 							clients.erase(fd);
 							continue;
 						}
@@ -138,7 +138,7 @@ int main(int argc, char **argv)
 						if (!client.outBuffer.empty())
 						{
 							bool wouldBlock = false;
-							ssize_t bytesSent = AyoubIo::sendFromBuffer(fd, client.outBuffer, wouldBlock);
+							ssize_t bytesSent = NetworkIo::sendFromBuffer(fd, client.outBuffer, wouldBlock);
 							if (bytesSent > 0)
 							{
 								std::cout << "[SEND] Transmis " << bytesSent << " octets au FD " << fd << std::endl;
@@ -164,7 +164,7 @@ int main(int argc, char **argv)
 	for (std::map<int, ClientContext>::iterator it = clients.begin(); it != clients.end(); ++it)
 	{
 		poller.removeFd(it->first);
-		AyoubSocket::closeFd(it->first);
+		ServerSocket::closeFd(it->first);
 	}
 	clients.clear();
 	serverSocket.closeSocket();

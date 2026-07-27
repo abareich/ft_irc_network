@@ -1,8 +1,7 @@
 # 🚀 SIMULATION D'EXÉCUTION ET DOCUMENTATION DÉTAILLÉE DU MODULE RÉSEAU (`FT_IRC`)
 
 > **Composant :** Couche Réseau Non-Bloquante (C++98 / I/O Multiplexing via `poll`)  
-> **Auteur :** Ayoub Bareich (`ayoub_code`)  
-> **Destination :** Support complet pour **NotebookLM**, révision technique & soutenance  
+> **Auteur :** Ayoub Bareich (`ayoub_code`)   
 > **Langue :** Français  
 
 ---

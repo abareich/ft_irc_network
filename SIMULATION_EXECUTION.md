@@ -438,6 +438,3 @@ class AyoubIo {
 | `EAGAIN` / `EWOULDBLOCK` | Error Resource Temporarily Unavailable | Indique qu'une opération non-bloquante doit être retentée plus tard. |
 
 ---
-
-> 💡 **Remarque pour la Soutenance / NotebookLM :**  
-> Ce document regroupe l'intégralité de la couche réseau du serveur `ft_irc`. Il démontre la parfaite conformité aux contraintes de l'école (C++98, non-bloquant, gestion propre de la mémoire et des signaux POSIX).

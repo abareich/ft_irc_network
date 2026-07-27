@@ -1,13 +1,13 @@
-# Makefile for ayoub_code test executable
+# Makefile for Network Layer test executable
 
-NAME		= ayoub_server_test
+NAME		= irc_server_test
 CXX			= c++
 CXXFLAGS	= -Wall -Wextra -Werror -std=c++98
 
 SRCS		= main_test.cpp \
-			  AyoubSocket.cpp \
-			  AyoubPollManager.cpp \
-			  AyoubIo.cpp
+			  ServerSocket.cpp \
+			  PollManager.cpp \
+			  NetworkIo.cpp
 
 OBJS		= $(SRCS:.cpp=.o)
 
